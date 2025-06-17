@@ -30,6 +30,9 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ./models:/app/models
+    - ./config.yaml:/app/config.yaml
+    - ./.env:/app/.env
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -37,7 +40,6 @@ x-airflow-common:
       condition: service_healthy
     postgres:
       condition: service_healthy
-
 services:
   postgres:
     image: postgres:13
@@ -53,6 +55,8 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+    networks:
+      - fraud-detection
 
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
@@ -67,6 +71,8 @@ services:
       retries: 50
       start_period: 30s
     restart: always
+    networks:
+      - fraud-detection
 
   airflow-apiserver:
     <<: *airflow-common
@@ -84,6 +90,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - fraud-detection
 
   airflow-scheduler:
     <<: *airflow-common
@@ -99,6 +107,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - fraud-detection
 
   airflow-dag-processor:
     <<: *airflow-common
@@ -114,6 +124,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - fraud-detection
 
   airflow-worker:
     <<: *airflow-common
@@ -139,6 +151,11 @@ services:
         condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
+    deploy:
+      mode : replicated
+      replicas: 2
+    networks:
+      - fraud-detection
 
   airflow-triggerer:
     <<: *airflow-common
@@ -154,6 +171,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - fraud-detection
 
   airflow-init:
     <<: *airflow-common
@@ -246,6 +265,8 @@ services:
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
     user: "0:0"
+    networks:
+      - fraud-detection
 
   airflow-cli:
     <<: *airflow-common
@@ -261,10 +282,12 @@ services:
       - airflow
     depends_on:
       <<: *airflow-common-depends-on
-
+    networks:
+      - fraud-detection
   # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
   # or by explicitly targeted on the command line e.g. docker-compose up flower.
   # See: https://docs.docker.com/compose/profiles/
+
   flower:
     <<: *airflow-common
     command: celery flower
@@ -283,6 +306,70 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - fraud-detection
+
+  mc:
+    image: minio/mc
+    platform: linux/amd64
+    depends_on:
+      - minio
+    container_name: mc
+    env_file:
+      - .env
+    entrypoint: >
+      /bin/sh -c "
+      /tmp/wait-for-it.sh minio:9000 &&
+      /usr/bin/mc alias set minio http://minio:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY} &&
+      /usr/bin/mc mb minio/mlflow;
+      exit 0;
+      "
+    volumes:
+      - ./wait-for-it.sh:/tmp/wait-for-it.sh
+    networks:
+      - fraud-detection
+
+
+  minio:
+    restart: always
+    platform: linux/amd64
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    command: server /data --console-address ":9001" --address ":9000"
+    volumes:
+      - minio:/data
+    networks:
+      - fraud-detection
+
+  mlflow-server:
+    platform: linux/amd64
+    build: ./mlflow
+    image: mlflow-server
+    container_name: mlflow-server
+    depends_on:
+      - mc
+      - postgres
+    ports:
+      - "5500:5500"
+    environment:
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    command: mlflow server --port 5500 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres/mlflow --default-artifact-root s3://mlflow
+    networks:
+      - fraud-detection
+
+
+networks:
+  fraud-detection:
+    driver: bridge
 
 volumes:
   postgres-db-volume:
+  minio:
