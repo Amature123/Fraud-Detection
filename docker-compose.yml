@@ -73,26 +73,6 @@ services:
     restart: always
     networks:
       - fraud-detection
-
-  airflow-apiserver:
-    <<: *airflow-common
-    command: api-server
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: always
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-    networks:
-      - fraud-detection
-
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -147,8 +127,6 @@ services:
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
-      airflow-apiserver:
-        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
     deploy:
@@ -348,7 +326,7 @@ services:
       - fraud-detection
 
   mlflow-server:
-    platform: linux/amd64
+    restart: always
     build: ./mlflow
     image: mlflow-server
     container_name: mlflow-server
@@ -361,7 +339,7 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-    command: mlflow server --port 5500 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres/mlflow --default-artifact-root s3://mlflow
+    command: mlflow server --port 5500 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://airflow:airflow@postgres/airflow --default-artifact-root s3://airflow
     networks:
       - fraud-detection
 
